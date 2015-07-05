@@ -53,7 +53,9 @@ final case class Parser[+A](parse: String => Option[(A, String)]) {
 
   /**
    * To formally satisfy interface needed for for comprehensions
-   * filter function should be defined, though in reality it is not needed at all
+   * filter function should be defined, we will also use it later in for comprehensions.
+   * Any if statement in for comprehension uses this function. It is possible to live without
+   * this functions but sometimes it is just very convenient (take a look at "satisfy" function)
    */
   def filter(p: A => Boolean): Parser[A] = Parser {str =>
     val resultFromParse = parse(str)
@@ -64,6 +66,31 @@ final case class Parser[+A](parse: String => Option[(A, String)]) {
         else None
     }
   }
+
+  /**
+   * Choice operator is defined below. It first tries the first parser. If this succeeds then result is
+   * returned. If first parser fails then the second parser is tried and the result of the second parse
+   * is returned.
+   * This is low level combinator and cannot be implemented using already defined combinators.
+   * In general, all low level parsers must be implemented in a library and implementation of higher level
+   * parsers may be left to an user (for example "digit" could have been left of the library, though
+   * it is convenient)
+   * B >: A can be oveided if Parser class would be declared without +A. In general it is preferable to
+   * declare type parameters as covariant if this is possible
+   * The operator must be declared here (and not in companion object) if we want to use operator notation
+   * like "parser1 <|> parser2"
+   */
+  def <|>[B >: A](p: Parser[B]): Parser[B] = Parser { str =>
+    this.parse(str) match {
+      case ok1@Some(_) => ok1
+      case None =>
+        p.parse(str) match {
+          case ok2@Some(_) => ok2
+          case None => None
+        }
+    }
+  }
+
 }
 
 /**
@@ -80,7 +107,7 @@ object Parser {
 
   /**
    * Below are combinators - functions used for parser construction.
-   * Combining these functions we will build our parsers
+   * Combining these functions we will build our parsers.
    */
 
   /**
@@ -90,4 +117,64 @@ object Parser {
     if (str == "") None
     else Some(str(0), str.tail)
   }
+
+  /**
+   * anyChar parser matches any char unconditionally. For more complex logical decisions, conditional
+   * matching is required. Such conditional matching is done by our satisfy parser. If current character
+   * satisfies the supplied predicate, then that character is returned. Else parse is unsuccessful.
+   * Notice here we already use the defined monadic operatios (with for comprehensions sugar)
+   */
+  def satisty(predicate: Char => Boolean): Parser[Char] = for {
+    c <- anyChar
+    if (predicate(c))
+  } yield c
+
+  /**
+   * Parser which returns char if the char is digit. Otherwise fails.
+   * Here we are already using combinators. It becomes powerful :)
+   */
+  def digit: Parser[Char] = satisty(_.isDigit)
+
+  /**
+   * The following two combinators are almost always defined together (as in the
+   * most straightforward implementation they depend on each other). They match
+   * a given parser zero or more times (one or more times). The result from parsers
+   * is returned collected in a sequence (Seq is very similar interface as List in Java)
+   */
+  def many[A](p: Parser[A]): Parser[Seq[A]] = many1(p) <|> unit(Seq.empty)
+
+  def many1[A](p: Parser[A]): Parser[Seq[A]] = for {
+    res <- p
+    resSeq <- many(p)
+  } yield (res +: resSeq)
+
+  /**
+   * And for some more helper parsers...
+   * Names must and return types should be self explanatory
+   */
+  def integer: Parser[Double] = for { //returns double, though input is integer
+    r <- many1(digit)
+  } yield r.mkString("").toDouble
+
+  def floating: Parser[Double] = for {
+    integerPart <- many1(digit)
+    point <- satisty(_ == '.')
+    floatingPart <- many1(digit)
+  } yield ((integerPart :+ point) ++ floatingPart).mkString("").toDouble
+
+  def skipWhiteSpace: Parser[Unit] = for {
+    _ <- many(satisty(_ == ' '))
+  } yield Unit
+
+  /**
+   * This parser lifts a given parser to white space insensitive parser
+   * This may be useful when tokenizing for example, as white space is
+   * insignificant in many languages
+   */
+  def liftToWhiteSpaceInsensitive[A](p: Parser[A]): Parser[A] = for {
+    _ <- skipWhiteSpace
+    res <- p
+    _ <- skipWhiteSpace
+  } yield res
+
 }
